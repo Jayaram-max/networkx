@@ -981,3 +981,97 @@ class TestJohnsonAlgorithm(WeightedTestBase):
         validate_path(self.XG3, 0, 3, 15, nx.johnson(self.XG3)[0][3])
         validate_path(self.XG4, 0, 2, 4, nx.johnson(self.XG4)[0][2])
         validate_path(self.MXG4, 0, 2, 4, nx.johnson(self.MXG4)[0][2])
+
+
+def _hide_edge(*hidden):
+    """Weight function that hides the given edges by returning None."""
+
+    def weight(u, v, d):
+        return None if (u, v) in hidden else d.get("weight", 1)
+
+    return weight
+
+
+class TestHiddenEdges:
+    """A weight function that returns None hides the edge. This is supported by
+    Dijkstra, so Bellman-Ford, Goldberg-Radzik and Johnson should agree."""
+
+    def test_hidden_edge_is_skipped(self):
+        G = nx.DiGraph([(0, 1), (1, 2), (0, 2)])
+        weight = _hide_edge((0, 2))
+        assert nx.dijkstra_path_length(G, 0, 2, weight=weight) == 2
+        assert nx.bellman_ford_path_length(G, 0, 2, weight=weight) == 2
+        assert nx.bellman_ford_path(G, 0, 2, weight=weight) == [0, 1, 2]
+        assert nx.single_source_bellman_ford(G, 0, weight=weight)[0][2] == 2
+        assert nx.goldberg_radzik(G, 0, weight=weight)[1][2] == 2
+        assert nx.johnson(G, weight=weight)[0][2] == [0, 1, 2]
+
+    def test_bellman_ford_predecessor_and_distance(self):
+        G = nx.DiGraph([(0, 1), (1, 2), (0, 2)])
+        pred, dist = nx.bellman_ford_predecessor_and_distance(
+            G, 0, weight=_hide_edge((0, 2))
+        )
+        assert dist == {0: 0, 1: 1, 2: 2}
+        assert pred == {0: [], 1: [0], 2: [1]}
+
+    def test_hidden_edge_makes_node_unreachable(self):
+        G = nx.DiGraph([(0, 1), (1, 2)])
+        weight = _hide_edge((1, 2))
+        assert nx.single_source_bellman_ford(G, 0, weight=weight)[0] == {0: 0, 1: 1}
+        assert nx.goldberg_radzik(G, 0, weight=weight)[1] == {0: 0, 1: 1}
+        with pytest.raises(nx.NetworkXNoPath):
+            nx.bellman_ford_path(G, 0, 2, weight=weight)
+
+    def test_hidden_edge_with_negative_weights(self):
+        G = nx.DiGraph()
+        G.add_weighted_edges_from([(0, 1, 4), (1, 2, -2), (0, 2, 1), (2, 3, 1)])
+        weight = _hide_edge((0, 2))
+        assert nx.single_source_bellman_ford(G, 0, weight=weight)[0] == {
+            0: 0,
+            1: 4,
+            2: 2,
+            3: 3,
+        }
+        assert nx.goldberg_radzik(G, 0, weight=weight)[1] == {0: 0, 1: 4, 2: 2, 3: 3}
+
+    def test_hidden_negative_edge_does_not_make_a_cycle(self):
+        G = nx.DiGraph()
+        G.add_weighted_edges_from([(0, 1, 1), (1, 0, -5)])
+        weight = _hide_edge((1, 0))
+        assert not nx.negative_edge_cycle(G, weight=weight)
+        assert nx.negative_edge_cycle(G, weight="weight")
+        assert nx.single_source_bellman_ford(G, 0, weight=weight)[0] == {0: 0, 1: 1}
+        assert nx.goldberg_radzik(G, 0, weight=weight)[1] == {0: 0, 1: 1}
+
+    @pytest.mark.parametrize("create_using", [nx.DiGraph, nx.MultiDiGraph])
+    def test_hidden_self_loop(self, create_using):
+        G = create_using()
+        G.add_weighted_edges_from([(0, 1, 1), (1, 1, -3)])
+        weight = _hide_edge((1, 1))
+        assert nx.goldberg_radzik(G, 0, weight=weight)[1] == {0: 0, 1: 1}
+        assert nx.single_source_bellman_ford(G, 0, weight=weight)[0] == {0: 0, 1: 1}
+
+    def test_undirected(self):
+        G = nx.cycle_graph(4)
+        weight = _hide_edge((0, 3), (3, 0))
+        assert nx.bellman_ford_path_length(G, 0, 3, weight=weight) == 3
+        assert nx.goldberg_radzik(G, 0, weight=weight)[1][3] == 3
+
+    def test_johnson_hidden_edge(self):
+        G = nx.DiGraph()
+        G.add_weighted_edges_from([(0, 1, 2), (1, 2, -1), (0, 2, 5)])
+        weight = _hide_edge((0, 2))
+        paths = nx.johnson(G, weight=weight)
+        assert paths[0][2] == [0, 1, 2]
+        assert 1 not in paths[2]
+
+    def test_same_as_dijkstra_on_random_graphs(self):
+        for seed in range(20):
+            G = nx.gnp_random_graph(12, 0.3, seed=seed, directed=True)
+            hidden = {(u, v) for u, v in G.edges if (u + 2 * v + seed) % 3 == 0}
+            weight = _hide_edge(*hidden)
+            expected = nx.single_source_dijkstra_path_length(G, 0, weight=weight)
+            assert nx.single_source_bellman_ford_path_length(G, 0, weight=weight) == (
+                expected
+            )
+            assert nx.goldberg_radzik(G, 0, weight=weight)[1] == expected
